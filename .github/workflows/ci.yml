@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  test-and-stress:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: booking
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d booking"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/booking?schema=public&connection_limit=50&pool_timeout=30
+      ADMIN_PASSWORD: admin-secret
+      BOOKING_SERIALIZE: 'on'
+      PORT: '3000'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Apply migrations (creates EXCLUDE constraint)
+        run: npx prisma migrate deploy
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Seed database
+        run: npm run seed
+
+      - name: Run integration tests (real Postgres)
+        run: npm test
+
+      - name: Start server and run stress test (50 parallel -> exactly 1)
+        run: |
+          npm start &
+          SERVER_PID=$!
+          echo "server pid=$SERVER_PID"
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/health > /dev/null; then
+              echo "server is up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          npm run seed
+          npm run stress
+          STRESS_EXIT=$?
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit $STRESS_EXIT

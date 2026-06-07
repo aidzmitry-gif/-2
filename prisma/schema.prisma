@@ -1,0 +1,146 @@
+// Booking 2.0 — Prisma schema
+//
+// Время в БД хранится ТОЛЬКО в UTC (timestamptz). Локальные часовые пояса
+// (мастера и клиента) применяются в приложении, не в БД.
+//
+// Используется driver-adapter (`@prisma/adapter-pg` поверх node-postgres) +
+// queryCompiler — клиент не зависит от нативного Rust query-engine.
+//
+// EXCLUDE-ограничение против пересечений (tstzrange + btree_gist) Prisma
+// декларативно не умеет — оно добавляется raw-SQL миграцией
+// (prisma/migrations/0002_exclude_constraint/migration.sql).
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures  = ["driverAdapters", "queryCompiler"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+}
+
+enum BookingKind {
+  BOOKING // обычная клиентская запись
+  BLOCK   // ручная блокировка времени админом
+}
+
+enum WaitlistStatus {
+  WAITING
+  PROMOTED
+  CANCELLED
+}
+
+model Master {
+  id        String   @id @default(uuid())
+  name      String
+  timezone  String // IANA, например "Europe/Moscow"
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  schedules  Schedule[]
+  exceptions ScheduleException[]
+  services   MasterService[]
+  bookings   Booking[]
+  waitlist   WaitlistEntry[]
+
+  @@map("masters")
+}
+
+// Недельный график мастера. Часы — в локальном времени мастера.
+model Schedule {
+  id          String @id @default(uuid())
+  masterId    String @map("master_id")
+  weekday     Int // ISO: 1 = понедельник ... 7 = воскресенье
+  startMinute Int    @map("start_minute") // минут от полуночи (локально у мастера)
+  endMinute   Int    @map("end_minute")
+
+  master Master @relation(fields: [masterId], references: [id], onDelete: Cascade)
+
+  @@unique([masterId, weekday])
+  @@map("schedules")
+}
+
+// Исключения (отпуск, перерыв) — диапазон в UTC.
+model ScheduleException {
+  id       String   @id @default(uuid())
+  masterId String   @map("master_id")
+  startAt  DateTime @map("start_at") @db.Timestamptz(6)
+  endAt    DateTime @map("end_at") @db.Timestamptz(6)
+  reason   String   @default("")
+
+  master Master @relation(fields: [masterId], references: [id], onDelete: Cascade)
+
+  @@index([masterId])
+  @@map("schedule_exceptions")
+}
+
+model Service {
+  id          String @id @default(uuid())
+  name        String
+  durationMin Int    @map("duration_min") // 30 / 60 / 90
+  priceCents  Int    @map("price_cents")
+
+  masters  MasterService[]
+  bookings Booking[]
+  waitlist WaitlistEntry[]
+
+  @@map("services")
+}
+
+model MasterService {
+  masterId  String @map("master_id")
+  serviceId String @map("service_id")
+
+  master  Master  @relation(fields: [masterId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@id([masterId, serviceId])
+  @@map("master_services")
+}
+
+model Booking {
+  id               String        @id @default(uuid())
+  masterId         String        @map("master_id")
+  serviceId        String?       @map("service_id")
+  customerName     String?       @map("customer_name")
+  customerTimezone String?       @map("customer_timezone")
+  startAt          DateTime      @map("start_at") @db.Timestamptz(6)
+  endAt            DateTime      @map("end_at") @db.Timestamptz(6)
+  status           BookingStatus @default(CONFIRMED)
+  kind             BookingKind   @default(BOOKING)
+  // NULL-значения в уникальном индексе различны => много NULL допустимо,
+  // а одинаковые непустые ключи запрещены. Это и есть идемпотентность.
+  idempotencyKey   String?       @unique @map("idempotency_key")
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  master  Master   @relation(fields: [masterId], references: [id], onDelete: Cascade)
+  service Service? @relation(fields: [serviceId], references: [id])
+
+  @@index([masterId, status])
+  @@map("bookings")
+}
+
+model WaitlistEntry {
+  id                String         @id @default(uuid())
+  masterId          String         @map("master_id")
+  serviceId         String         @map("service_id")
+  customerName      String         @map("customer_name")
+  customerTimezone  String?        @map("customer_timezone")
+  startAt           DateTime       @map("start_at") @db.Timestamptz(6)
+  endAt             DateTime       @map("end_at") @db.Timestamptz(6)
+  status            WaitlistStatus @default(WAITING)
+  promotedBookingId String?        @map("promoted_booking_id")
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  master  Master  @relation(fields: [masterId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id])
+
+  @@index([masterId, startAt, endAt, status])
+  @@map("waitlist_entries")
+}

@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Бронирование 2.0 — админка</title>
+    <style>
+      :root {
+        --bg: #0f1115; --panel: #171a21; --panel-2: #1f2430; --line: #2a3140;
+        --text: #e7ebf0; --muted: #9aa6b6; --accent: #6ea8fe; --bad: #f87171; --ok: #4ade80;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+      header { padding: 24px; border-bottom: 1px solid var(--line); }
+      header h1 { margin: 0; font-size: 20px; }
+      main { max-width: 900px; margin: 0 auto; padding: 24px; }
+      label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; }
+      select, input, button { padding: 10px 12px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; font: inherit; }
+      button { cursor: pointer; }
+      .btn-primary { background: var(--accent); color: #0b1220; border: none; font-weight: 600; }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin-bottom: 18px; }
+      .row > div { flex: 1; min-width: 150px; }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 18px; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+      th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; }
+      .tag { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+      .tag.block { color: #fbbf24; border-color: #fbbf24; }
+      .danger { background: transparent; color: var(--bad); border-color: var(--bad); }
+      #login { max-width: 360px; }
+      #msg { margin: 12px 0; padding: 10px 12px; border-radius: 10px; display: none; }
+      #msg.ok { display: block; background: rgba(74,222,128,.12); border: 1px solid var(--ok); }
+      #msg.bad { display: block; background: rgba(248,113,113,.12); border: 1px solid var(--bad); }
+      .hidden { display: none; }
+      h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin: 0 0 12px; }
+    </style>
+  </head>
+  <body>
+    <header><h1>Админка · Бронирование 2.0</h1></header>
+    <main>
+      <div id="login" class="card">
+        <h2>Вход</h2>
+        <label for="pwd">Пароль администратора</label>
+        <input id="pwd" type="password" style="width:100%; margin-bottom:12px;" placeholder="из .env (ADMIN_PASSWORD)" />
+        <button id="enter" class="btn-primary" style="width:100%;">Войти</button>
+      </div>
+
+      <div id="panel" class="hidden">
+        <div class="row">
+          <div>
+            <label for="master">Мастер</label>
+            <select id="master" style="width:100%;"></select>
+          </div>
+          <div>
+            <label for="date">Дата</label>
+            <input id="date" type="date" style="width:100%;" />
+          </div>
+          <div style="flex:0 0 auto;">
+            <button id="load" class="btn-primary">Показать день</button>
+          </div>
+        </div>
+
+        <div id="msg"></div>
+
+        <div class="card">
+          <h2>Записи и блокировки</h2>
+          <table>
+            <thead>
+              <tr><th>Время (у мастера)</th><th>Тип</th><th>Клиент / услуга</th><th></th></tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h2>Ручная блокировка времени</h2>
+          <div class="row">
+            <div><label for="bStart">Начало (ЧЧ:ММ, у мастера)</label><input id="bStart" type="time" value="13:00" style="width:100%;" /></div>
+            <div><label for="bEnd">Конец (ЧЧ:ММ)</label><input id="bEnd" type="time" value="14:00" style="width:100%;" /></div>
+            <div><label for="bReason">Причина</label><input id="bReason" type="text" value="Перерыв" style="width:100%;" /></div>
+            <div style="flex:0 0 auto;"><button id="block" class="btn-primary">Заблокировать</button></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      let token = '';
+      let masters = [];
+
+      const authHeaders = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${token}` });
+      const toMinutes = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+
+      function msg(text, ok) { const el = $('msg'); el.textContent = text; el.className = ok ? 'ok' : 'bad'; }
+
+      async function login() {
+        token = $('pwd').value.trim();
+        // Проверяем пароль реальным запросом, требующим авторизации.
+        const probe = await fetch(`/api/admin/day?masterId=__probe__&date=2000-01-01`, { headers: authHeaders() });
+        if (probe.status === 401) { alert('Неверный пароль'); token = ''; return; }
+        $('login').classList.add('hidden');
+        $('panel').classList.remove('hidden');
+        await loadMasters();
+      }
+
+      async function loadMasters() {
+        const res = await fetch('/api/masters');
+        masters = await res.json();
+        $('master').innerHTML = masters.map((m) => `<option value="${m.id}">${m.name} (${m.timezone})</option>`).join('');
+      }
+
+      async function loadDay() {
+        const masterId = $('master').value;
+        const date = $('date').value;
+        const res = await fetch(`/api/admin/day?masterId=${masterId}&date=${date}`, { headers: authHeaders() });
+        if (!res.ok) { msg('Не удалось загрузить день', false); return; }
+        const data = await res.json();
+        renderRows(data.bookings || []);
+      }
+
+      function renderRows(bookings) {
+        const tbody = $('rows');
+        if (!bookings.length) { tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">Записей нет</td></tr>'; return; }
+        tbody.innerHTML = '';
+        for (const b of bookings) {
+          const tr = document.createElement('tr');
+          const time = b.local ? b.local.time : new Date(b.startUtc).toISOString().slice(11, 16);
+          const isBlock = b.kind === 'BLOCK';
+          const who = isBlock ? '—' : `${b.customerName || ''}${b.service ? ' · ' + b.service.name : ''}`;
+          tr.innerHTML =
+            `<td>${time}</td>` +
+            `<td><span class="tag ${isBlock ? 'block' : ''}">${isBlock ? 'Блок' : 'Запись'}</span></td>` +
+            `<td>${who}</td>` +
+            `<td></td>`;
+          const td = tr.lastElementChild;
+          const btn = document.createElement('button');
+          btn.className = 'danger';
+          btn.textContent = 'Отменить';
+          btn.onclick = () => cancel(b.id);
+          td.appendChild(btn);
+          tbody.appendChild(tr);
+        }
+      }
+
+      async function cancel(bookingId) {
+        const res = await fetch('/api/admin/cancel', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ bookingId }) });
+        if (res.ok) {
+          const data = await res.json();
+          msg(data.promoted ? `Отменено. Из листа ожидания записан: ${data.promoted.customerName}.` : 'Запись отменена.', true);
+          loadDay();
+        } else { msg('Не удалось отменить', false); }
+      }
+
+      async function block() {
+        const masterId = $('master').value;
+        const date = $('date').value;
+        const res = await fetch('/api/admin/block', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({
+            masterId,
+            date,
+            startMinute: toMinutes($('bStart').value),
+            endMinute: toMinutes($('bEnd').value),
+            reason: $('bReason').value,
+          }),
+        });
+        if (res.status === 201) { msg('Время заблокировано.', true); loadDay(); }
+        else { const e = await res.json().catch(() => ({})); msg(e?.error?.message || 'Не удалось заблокировать', false); }
+      }
+
+      $('enter').addEventListener('click', login);
+      $('load').addEventListener('click', loadDay);
+      $('block').addEventListener('click', block);
+      $('date').value = new Date().toISOString().slice(0, 10);
+    </script>
+  </body>
+</html>

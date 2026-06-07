@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Бронирование 2.0 — запись</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel-2: #1f2430;
+        --line: #2a3140;
+        --text: #e7ebf0;
+        --muted: #9aa6b6;
+        --accent: #6ea8fe;
+        --ok: #4ade80;
+        --bad: #f87171;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 15px/1.5 "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      header {
+        padding: 28px 24px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.3px; }
+      header p { margin: 0; color: var(--muted); }
+      main { max-width: 940px; margin: 0 auto; padding: 24px; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 14px;
+        margin-bottom: 18px;
+      }
+      label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; }
+      select, input, button {
+        width: 100%;
+        padding: 10px 12px;
+        background: var(--panel-2);
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        font: inherit;
+      }
+      button { cursor: pointer; }
+      .btn-primary { background: var(--accent); color: #0b1220; border: none; font-weight: 600; }
+      .btn-primary:hover { filter: brightness(1.05); }
+      .slots {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 10px;
+      }
+      .slot {
+        text-align: left;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px 12px;
+      }
+      .slot:hover { border-color: var(--accent); }
+      .slot .big { font-size: 17px; font-weight: 600; }
+      .slot .small { color: var(--muted); font-size: 12px; }
+      .empty { color: var(--muted); padding: 16px 0; }
+      #status { margin: 14px 0; padding: 12px 14px; border-radius: 10px; display: none; }
+      #status.ok { display: block; background: rgba(74, 222, 128, 0.12); border: 1px solid var(--ok); }
+      #status.bad { display: block; background: rgba(248, 113, 113, 0.12); border: 1px solid var(--bad); }
+      .live { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+      .dot.on { background: var(--ok); }
+      section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin: 0 0 12px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Бронирование 2.0</h1>
+      <p>Запись к мастеру с учётом часовых поясов · <span class="live"><span id="dot" class="dot"></span><span id="liveText">подключение…</span></span></p>
+    </header>
+    <main>
+      <div class="grid">
+        <div>
+          <label for="master">Мастер</label>
+          <select id="master"></select>
+        </div>
+        <div>
+          <label for="service">Услуга</label>
+          <select id="service"></select>
+        </div>
+        <div>
+          <label for="date">Дата</label>
+          <input id="date" type="date" />
+        </div>
+        <div>
+          <label for="tz">Ваш часовой пояс</label>
+          <select id="tz"></select>
+        </div>
+      </div>
+      <div class="grid" style="grid-template-columns: 1fr;">
+        <button id="load" class="btn-primary">Показать свободные слоты</button>
+      </div>
+
+      <div id="status"></div>
+
+      <section>
+        <h2>Свободные слоты</h2>
+        <div id="slots" class="slots"></div>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const ZONES = ['Europe/Moscow', 'Asia/Yekaterinburg', 'Europe/Kaliningrad', 'Europe/London', 'UTC'];
+      let masters = [];
+
+      function showStatus(msg, ok) {
+        const el = $('status');
+        el.textContent = msg;
+        el.className = ok ? 'ok' : 'bad';
+      }
+
+      function initTz() {
+        const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const list = [...new Set([local, ...ZONES])];
+        $('tz').innerHTML = list.map((z) => `<option value="${z}">${z}</option>`).join('');
+        $('tz').value = local;
+      }
+
+      function fillServices() {
+        const m = masters.find((x) => x.id === $('master').value);
+        const services = m ? m.services : [];
+        $('service').innerHTML = services
+          .map((s) => `<option value="${s.id}">${s.name} · ${s.durationMin} мин</option>`)
+          .join('');
+      }
+
+      async function loadMasters() {
+        const res = await fetch('/api/masters');
+        masters = await res.json();
+        $('master').innerHTML = masters
+          .map((m) => `<option value="${m.id}">${m.name} (${m.timezone})</option>`)
+          .join('');
+        fillServices();
+      }
+
+      async function loadSlots() {
+        const masterId = $('master').value;
+        const serviceId = $('service').value;
+        const date = $('date').value;
+        const tz = $('tz').value;
+        if (!masterId || !serviceId || !date) {
+          showStatus('Выберите мастера, услугу и дату', false);
+          return;
+        }
+        const url = `/api/slots?masterId=${masterId}&serviceId=${serviceId}&date=${date}&tz=${encodeURIComponent(tz)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        renderSlots(data.slots || [], { masterId, serviceId, tz });
+      }
+
+      function renderSlots(slots, ctx) {
+        const box = $('slots');
+        if (!slots.length) {
+          box.innerHTML = '<div class="empty">На эту дату свободных слотов нет.</div>';
+          return;
+        }
+        box.innerHTML = '';
+        for (const s of slots) {
+          const btn = document.createElement('button');
+          btn.className = 'slot';
+          btn.innerHTML = `<div class="big">${s.client.time}</div><div class="small">у мастера ${s.master.time} · ${s.durationMin} мин</div>`;
+          btn.onclick = () => book(s, ctx);
+          box.appendChild(btn);
+        }
+      }
+
+      async function book(slot, ctx) {
+        const customerName = prompt('Ваше имя для записи:');
+        if (!customerName) return;
+        const res = await fetch('/api/bookings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            masterId: ctx.masterId,
+            serviceId: ctx.serviceId,
+            startAt: slot.startUtc,
+            customerName,
+            customerTimezone: ctx.tz,
+          }),
+        });
+        if (res.status === 201) {
+          showStatus(`Готово! Вы записаны на ${slot.client.time}.`, true);
+          loadSlots();
+        } else if (res.status === 409) {
+          if (confirm('Этот слот только что заняли. Встать в лист ожидания?')) {
+            const w = await fetch('/api/bookings/waitlist', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                masterId: ctx.masterId,
+                serviceId: ctx.serviceId,
+                startAt: slot.startUtc,
+                customerName,
+                customerTimezone: ctx.tz,
+              }),
+            });
+            const wb = await w.json();
+            showStatus(`Вы в листе ожидания, позиция ${wb.position}. Освободится — запишем автоматически.`, true);
+          }
+        } else {
+          const err = await res.json().catch(() => ({}));
+          showStatus(err?.error?.message || 'Не удалось записаться', false);
+        }
+      }
+
+      function connectSSE() {
+        const es = new EventSource('/api/events');
+        es.addEventListener('ready', () => {
+          $('dot').className = 'dot on';
+          $('liveText').textContent = 'живое обновление включено';
+        });
+        const refresh = () => { if ($('slots').children.length) loadSlots(); };
+        es.addEventListener('booking_created', refresh);
+        es.addEventListener('booking_cancelled', refresh);
+        es.addEventListener('waitlist_promoted', refresh);
+        es.onerror = () => {
+          $('dot').className = 'dot';
+          $('liveText').textContent = 'переподключение…';
+        };
+      }
+
+      $('master').addEventListener('change', fillServices);
+      $('load').addEventListener('click', loadSlots);
+
+      (function init() {
+        const today = new Date();
+        $('date').value = today.toISOString().slice(0, 10);
+        initTz();
+        loadMasters().then(connectSSE);
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,30 @@
+# зависимости
+node_modules/
+
+# окружение (секреты не коммитим — есть .env.example)
+.env
+.env.local
+*.local
+
+# сгенерированный Prisma-клиент
+node_modules/.prisma/
+src/generated/
+
+# сборка / кэш
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.vitest/
+
+# логи
+*.log
+npm-debug.log*
+
+# ОС
+.DS_Store
+Thumbs.db
+
+# редакторы
+.idea/
+.vscode/
